@@ -6,6 +6,7 @@ import Transaction from '../models/Transaction';
 import uploadConfig from '../config/upload';
 import TransactionsRepository from '../repositories/TransactionsRepository';
 import Category from '../models/Category';
+import AppError from '../errors/AppError';
 
 interface Request {
   title: string;
@@ -16,6 +17,9 @@ interface Request {
 
 class ImportTransactionsService {
   async execute(fileName: string): Promise<Transaction[]> {
+    if (!fileName.endsWith('.csv')) {
+      throw new AppError('This type of file is invalid.', 400);
+    }
     const transactionRepository = getCustomRepository(TransactionsRepository);
     const categoryRepository = getRepository(Category);
     const csvFilePath = path.resolve(uploadConfig.directory, fileName);
