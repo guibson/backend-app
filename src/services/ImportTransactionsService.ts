@@ -1,9 +1,11 @@
 import path from 'path';
 import fs from 'fs';
 import csv from 'csv-parse';
+import { getCustomRepository, getRepository, In } from 'typeorm';
 import Transaction from '../models/Transaction';
-import CreateTransactionService from './CreateTransactionService';
 import uploadConfig from '../config/upload';
+import TransactionsRepository from '../repositories/TransactionsRepository';
+import Category from '../models/Category';
 
 interface Request {
   title: string;
@@ -14,11 +16,10 @@ interface Request {
 
 class ImportTransactionsService {
   async execute(fileName: string): Promise<Transaction[]> {
-    const transactionCreate = new CreateTransactionService();
-
-    const rows: Request[] = [];
-    const csvFile = path.resolve(uploadConfig.directory, fileName);
-    const csvParser = fs.createReadStream(csvFile).pipe(
+    const transactionRepository = getCustomRepository(TransactionsRepository);
+    const categoryRepository = getRepository(Category);
+    const csvFilePath = path.resolve(uploadConfig.directory, fileName);
+    const csvParser = fs.createReadStream(csvFilePath).pipe(
       csv({
         from_line: 2,
         ltrim: true,
@@ -26,10 +27,13 @@ class ImportTransactionsService {
       }),
     );
 
-    csvParser.on('data', async transactionRow => {
-      const [title, type, value, category] = transactionRow;
+    const rowsCategory: string[] = [];
+    const rowsTransaction: Request[] = [];
+    csvParser.on('data', async lineCsv => {
+      const [title, type, value, category] = lineCsv;
       // check if some header is valid
-      rows.push({
+      rowsCategory.push(category);
+      rowsTransaction.push({
         title,
         type,
         value,
@@ -41,12 +45,37 @@ class ImportTransactionsService {
       csvParser.on('end', resolve);
     });
 
-    const arrayTransaction = [];
-    for (const iterator of rows) {
-      const resultTransaction = await transactionCreate.execute(iterator);
-      arrayTransaction.push(resultTransaction);
-    }
-    return arrayTransaction;
+    // do bulk insert
+    const findCategoriesExist = await categoryRepository.find({
+      where: { title: In(rowsCategory) },
+    });
+
+    const titleCategories = findCategoriesExist.map(
+      (category: Category) => category.title,
+    );
+    const filterCategoriesToAdd = rowsCategory
+      .filter(category => !titleCategories.includes(category))
+      .filter((value, index, self) => self.indexOf(value) === index);
+    const newCategories = categoryRepository.create(
+      filterCategoriesToAdd.map(title => ({ title })),
+    );
+    await categoryRepository.save(newCategories);
+    const resultCategories = [...newCategories, ...findCategoriesExist];
+
+    // save transactions
+    const createTransactionsByImport = transactionRepository.create(
+      rowsTransaction.map(transaction => ({
+        title: transaction.title,
+        type: transaction.type,
+        value: transaction.value,
+        category: resultCategories.find(
+          category => category.title === transaction.category,
+        ),
+      })),
+    );
+    await transactionRepository.save(createTransactionsByImport);
+    await fs.promises.unlink(csvFilePath);
+    return createTransactionsByImport;
   }
 }
 
